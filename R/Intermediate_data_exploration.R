@@ -8,12 +8,11 @@ pbmc10k_train <- pbmc10k[,indx[1:5000]]
 pbmc10k_test <- pbmc10k[,indx[5001:length(colnames(pbmc10k))]]
 
 
-
 rpredictor_normed_z <- fit_predictor_R(gexp_train = pbmc10k_train@assays[["RNA"]],
                                    adt_train = pbmc10k_train@assays[["ADT"]],
                                    zscore_relative_to_tsvd = 'after'
                               )
-r_predicted_adt_normed_z <- predict_R(rpredictor_normed_z,pbmc10k_test@assays[["RNA"]],zscore_relative_to_tsvd = 'after')
+r_predicted_adt_normed_z <- predict_R(rpredictor_normed_z,pbmc10k_test@assays[["RNA"]])
 
 reticulate::use_condaenv("C:/Users/mz24b548/AppData/Local/miniconda3/envs/scLinearDependencies")
 devtools::load_all("scLinear/")
@@ -60,83 +59,15 @@ for(model in 1:ncol(r_predicted_adt_normed_z)){
   py_vs_real <- append(py_vs_real, list(comparison_py_real))
 }
 
-# ggpubr::ggarrange(plotlist = r_vs_py, nrow = ceiling(sqrt(length(plotlist))), ncol = floor(sqrt(length(plotlist))))
-# ggpubr::ggarrange(plotlist = r_vs_real, nrow = ceiling(sqrt(length(plotlist))), ncol = floor(sqrt(length(plotlist))))
-# ggpubr::ggarrange(plotlist = py_vs_real, nrow = ceiling(sqrt(length(plotlist))), ncol = floor(sqrt(length(plotlist))))
+# ggpubr::ggarrange(plotlist = r_vs_py, nrow = ceiling(sqrt(length(r_vs_py))), ncol = floor(sqrt(length(r_vs_py))))
+# ggpubr::ggarrange(plotlist = r_vs_real, nrow = ceiling(sqrt(length(r_vs_real))), ncol = floor(sqrt(length(r_vs_real))))
+# ggpubr::ggarrange(plotlist = py_vs_real, nrow = ceiling(sqrt(length(py_vs_real))), ncol = floor(sqrt(length(py_vs_real))))
 
+feature_imp <- feature_importance(rpredictor_normed_z,pbmc10k_test@assays[["RNA"]],layer_gexp = 'counts')
+# intersect(row.names(fi),colnames(fi)) --> only CD4, CD14, CD19 & TIGIT have a directly corresponding RNA measured in the dataset
+# The RNA is generally within the top 10-20 most important genes for predicting protein abundance (as expected) --> for CD19 it's only at rank 59th
+# Still seems to indicate that the process 'works'
 
-gexp_fi <- pbmc10k_test@assays[["RNA"]]
-slot_gex <- 'counts'
-normalize_gex <- TRUE
-predictor <- rpredictor_normed_z
-# Feature importance --> first part the same as for predict_R --> project data and get model coefficients
-if(any(class(gexp_fi) %in% c("Seurat", "Assay", "Assay5"))){
-  gexp_fi <- Seurat::GetAssayData(gexp_fi, slot = slot_gex)
-}else{ # assume it is a matrix type
-  gexp_fi <- Matrix::Matrix(gexp_fi, sparse = TRUE)
-}
-
-if(normalize_gex){
-  gexp_fi <- Matrix::t(gexp_normalize_modified(gexp_fi))
-}else {gexp_fi <- Matrix::t(gexp_fi)}
-
-if(zscore_relative_to_tsvd == 'before'){
-  gexp_fi <- Matrix::t(apply(gexp_fi, 1, function(x) {
-    (x - mean(x)) / sd(x)
-  }
-  ))  
-}
-
-gexp_fi_projected <- gexp_fi %*% predictor$tsvd$v
-
-if(zscore_relative_to_tsvd == 'after'){
-  gexp_fi_projected <- Matrix::t(apply(gexp_fi_projected, 1, function(x) {
-    (x - mean(x)) / sd(x)
-  }
-  ))
-}
-
-coeff_matrix <- matrix(nrow = ncol(gexp_fi_projected)+1)
-# Last coefficient usually 0 --> reason not quite clear but possibly because there is internal linear dependence
-for(model in predictor$lms){
-  coeff_matrix <- cbind(coeff_matrix,model$coefficients)
-}
-coeff_matrix[is.na(coeff_matrix)] <- 0
-# Drop the empty column from the coeff matrix (used only to initialize the object)
-coeff_matrix <- coeff_matrix[,2:ncol(coeff_matrix)]
-
-# Drop the intercept --> not used for derivative d_prediction/d_gex --> constants drop from derivative
-coeff_matrix_fi <- t(coeff_matrix[2:nrow(coeff_matrix),])
-
-# input x = rowvector (corresponding to one cell) of tSVD projection matrix
-cellwise_jacobian <- function(cell_projection){
-jacobian <- numDeriv::jacobian(func = function(x) {(x - mean(x)) / sd(x)}, cell_projection)
-}
-# Slow but that's a looooot of matrix multiplications to run so probably to be expected
-Js <- apply(gexp_fi_projected,1,cellwise_jacobian,simplify = FALSE)
-# JV calculation too slow and object becomes so big that the space for it cannot be allocated
-# JV <- lapply(Js_test,function(J){return(J %*% Matrix::t(predictor$tsvd$v))})
-# Trying WJ first (resulting in 1741 17x300 matrices instead of 300x300 matrices)
-WJ <- lapply(Js_test,function(J){return(coeff_matrix_fi %*% J)})
-v_t <- Matrix::t(predictor$tsvd$v)
-WJV <- abind::abind(lapply(WJ,function(WJ){return(WJ %*% v_t)}), along = 3)
-feature_importance_means <- apply(WJV, c(1, 2), mean)
-colnames(feature_importance_means) <- colnames(gexp_fi)
-rownames(feature_importance_means) <- names(predictor$lms)
-
-" Getting quite different results compared to python
-There is very rough match in magnitudes i.e. the features which have < e-10 importance are generally set to 0 here
-and the ranks of feature importance seem superficially similar but the actual values often differ by a factor of 10 or potentially much more
-However, it is reassuring to note that the RNAs corresponding to each ADT protein are typically amongst the most important features
-to predict the measured ADT level --> increases trust in the calculated feature importance for the other RNAs
-"
-
-# Depending on z-score after or skip the output is a simple array or a dgCMatrix
-
-
-# I don't get the CLR back from the Seurat Normalization of ADT --> not quite sure WHAT it returns
-# CLR not of counts but of scaled counts?
-# Check if ADTs somewhat proportional to total RNA counts --> would allow us to skip a lot of scaling
 
 evaluate_predictor(rpredictor_normed_z,pbmc10k_test@assays[["RNA"]],pbmc10k_test@assays[["ADT"]])
 
