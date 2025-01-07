@@ -137,248 +137,149 @@ scLinear <- function(object, remove_doublets = TRUE, low_qc_cell_removal = TRUE,
 }
 
 
-#' Create a Gene expression to ADT assay predictor
-#'
-#' @param do_log1p
-#'
-#' @return pipe an adt predictor object
-#' @export
-#'
-#' @examples
-#' \dontrun{
-#' create_adt_predictor()
-#' }
-create_adt_predictor <- function(do_log1p = FALSE){
-    pipe <- prediction$ADTPredictor(do_log1p = do_log1p)
-  return(pipe)
-}
 
-#' Train a predictor object
-#'
-#' @param pipe A predictor object
-#' @param gex_train Gene expression assay
-#' @param adt_train ADT assay
-#' @param normalize Normalize GEX and ATD assay before fitting.
-#' @param margin Same as margin in NormalizeData function from Seurat
-#'
-#' @return pipe A trained predictor object
-#' @export
-#'
-#' @examples
-#' \dontrun{
-#' fit_predictor(pipe = pipe, gex_train = object@assays$RNA , adt_train = object@assays$ADT)
-#' }
-fit_predictor <- function(pipe, gexp_train , adt_train, gexp_test = NULL,
-                          slot_gex = "counts", slot_adt = "counts",
-                          normalize_gex = TRUE, normalize_adt = TRUE, margin = 2){
-
-
-  ## test if Seurat assay or matrix like object
-  if(class(gexp_train)[1] == "Assay"){ gexp_train <- Seurat::GetAssayData(gexp_train, slot = slot_gex) }
-  if(class(adt_train)[1] == "Assay"){ adt_train <- Seurat::GetAssayData(adt_train, slot = slot_adt) }
-
-  if(class(gexp_train)[1] == "Assay5"){ gexp_train <- Seurat::GetAssayData(gexp_train, slot = slot_gex) }
-  if(class(adt_train)[1] == "Assay5"){ adt_train <- Seurat::GetAssayData(adt_train, slot = slot_adt) }
-
+fit_predictor <- function(gexp_train,adt_train, gexp_test = NULL,
+                            layer_gex = "counts", layer_adt = "counts",
+                            normalize_gex = TRUE,normalize_adt = TRUE, margin = 2,
+                            n_components = 300, zscore_relative_to_tsvd = 'after'){
+  
+  # If objects are passed as matrices, leave as is. If passed as Seurat objects --> extract count data for assays
+  if(class(gexp_train)[1] == "Assay" | class(gexp_train)[1] == "Assay5"){ gexp_train <- Seurat::GetAssayData(gexp_train, layer = layer_gex) }
+  if(class(adt_train)[1] == "Assay" | class(adt_train)[1] == "Assay5"){ adt_train <- Seurat::GetAssayData(adt_train, layer = layer_adt) }
   if(!is.null(gexp_test)){
-    if(class(gexp_test)[1] == "Assay"){ gexp_test <- Seurat::GetAssayData(gexp_test, slot = slot_gex) }
-    if(class(gexp_test)[1] == "Assay5"){ gexp_test <- Seurat::GetAssayData(gexp_test, slot = slot_gex) }
+    if(class(gexp_test)[1] == "Assay" |class(gexp_test)[1] == "Assay5"){ gexp_test <- Seurat::GetAssayData(gexp_test, layer = layer_gex) }
   }
-
-
-  if(normalize_gex){
-    gexp_train <- gexp_normalize(gexp_train)
-    if( !is.null(gexp_test)){gexp_test <- gexp_normalize(gexp_test)}
-  }
-  if(normalize_adt){
-    adt_train <- Seurat::NormalizeData(adt_train, normalization.method = "CLR", margin = margin)
-  }
-
-  gexp_train_py <- reticulate::r_to_py(Matrix::t(gexp_train))
-  adt_train_py <- reticulate::r_to_py(Matrix::t(adt_train))
-  if( !is.null(gexp_test)){ gexp_test_py <- reticulate::r_to_py(Matrix::t(gexp_test)) }
-
-  if( !is.null(gexp_test) ){
-    #test if train and test set have the same names, in the correct order.
-    if(all(all(rownames(gexp_train) == rownames(gexp_test)))){
-      pipe$fit(gexp_train_py, adt_train_py, gex_names = rownames(gexp_train), adt_names = rownames(adt_train), gex_test = gexp_test_py)
-      }else{stop("train and test set do not have the same / order of names.")}
-  }else{
-    pipe$fit(gexp_train_py, adt_train_py, gex_names = rownames(gexp_train), adt_names = rownames(adt_train))
-  }
-  return(pipe)
 }
 
-
-#' Predict ADT values from gene expression
-#'
-#' @param gexp Matrix with gene expression data
-#' @param pipe Trained ADT predictor
-#' @param do_log1p A
-#'
-#' @return adt_assay retuns an adt assay object
-#' @export
-#'
-#' @examples
-#' \dontrun{
-#' adt_predict(gextp)
-#' }
-adt_predict <- function(pipe, gexp, slot = "counts", normalize = TRUE){
-
-  ## Handle gexp based on suplied data type
+# Why set prediction to 0 if negative? We're trying to predict the CLR of ADT not ADT itself --> can be negative
+# For some reason this never seems to be the case
+predict <- function(predictor,gexp,layer="counts",normalize_gex=TRUE){
+  
   if(any(class(gexp) %in% c("Seurat", "Assay", "Assay5"))){
-    gexp_matrix <- Seurat::GetAssayData(gexp, slot = slot)
+    gexp <- Seurat::GetAssayData(gexp, layer = layer)
   }else{ # assume it is a matrix type
-    gexp_matrix <- Matrix::Matrix(gexp, sparse = TRUE)
+    gexp <- Matrix::Matrix(gexp, sparse = TRUE)
   }
-
-  if(normalize){
-    gexp_matrix <- gexp_normalize(gexp_matrix)
+  
+  if(normalize_gex){
+    gexp <- gexp_normalize(gexp)
   }
-
-  ## test the overlap between the genes the predictor was trained on and the supplied gene expression matrix
-  if(typeof(pipe$gex_names) == "environment"){
-    gex_names_test <- pipe$gex_names$to_list()
-  }else{
-    gex_names_test <- pipe$gex_names
+  
+  # Bring into shape cells x genes (done during training in the step which combines train & test)
+  gexp <- filter_input_genes(gexp,predictor)
+  gexp <- Matrix::t(gexp)
+  
+  if(predictor$zscore_relative_to_tsvd == 'before'){
+    gexp <- Matrix::t(apply(gexp, 1, function(x) {
+      (x - mean(x)) / sd(x)
+    }
+    ))  
   }
-  if((sum(gex_names_test %in% rownames(gexp_matrix)) / length(gex_names_test)) < 0.5){
-    warning("Less than 50% of gene names are shared between the trained object and the supplied expression matrix. This can lead to ureliable predictions. To see the named used in the trained prediction object use pipe$gex_names.")
+  
+  gexp_projected <- gexp %*% predictor$tsvd$v
+  
+  if(predictor$zscore_relative_to_tsvd == 'after'){
+    gexp_projected <- Matrix::t(apply(gexp_projected, 1, function(x) {
+      (x - mean(x)) / sd(x)
+    }
+    ))
   }
-
-
-  gexp_matrix <- Matrix::t(gexp_matrix)
-  gexp_matrix_py <- reticulate::r_to_py(as.matrix(gexp_matrix))
-
-
-  predicted_adt <- pipe$predict(gexp_matrix_py, gex_names = colnames(gexp_matrix))
-
-  ## adt matrix
-  adt <- predicted_adt[[1]]
-  ## names of predicted proteins
-  if(typeof(predicted_adt[[2]]) == "environment"){
-    adt_names <- predicted_adt[[2]]$to_list()
-  }else{
-    adt_names <- predicted_adt[[2]]
+  
+  coeff_matrix <- matrix(nrow = ncol(gexp_projected)+1)
+  # Last coefficient usually 0 --> reason not quite clear but possibly because there is internal linear dependence
+  for(model in predictor$lms){
+    coeff_matrix <- cbind(coeff_matrix,model$coefficients)
   }
-  ## add
-  colnames(adt) <- adt_names
-  ## add initial cell names
-  rownames(adt) <- rownames(gexp_matrix)
-  ## transpose back for assay
-  adt <- Matrix::t(adt)
-
-  adt_assay <- Seurat::CreateAssayObject(data = adt)
-
-  #Seurat::Key(adt_assay) <- "predictedadt_"
-
-  return(adt_assay)
+  coeff_matrix[is.na(coeff_matrix)] <- 0
+  # Drop the empty column from the coeff matrix (used only to initialize the object)
+  coeff_matrix <- coeff_matrix[,2:ncol(coeff_matrix)]
+  
+  # Add column of 1s 'to the left' of the tSVD projection of the test data --> adds intercept of each model (intercept is the first coefficient of the lm)
+  lm_input <- cbind(rep(1,nrow(gexp_projected)),gexp_projected)
+  # Multiply tSVD projected & normed input data with LM coefficients
+  res <- lm_input %*% coeff_matrix
+  colnames(res) <- names(predictor$lms)
+  return(res)
 }
 
-#' Evaluate the adt predictor
-#'
-#' @param pipe Trained ADT predictor
-#' @param gexp_test Matrix with gene expression data.
-#' @param adt_test Matrix with ADT count data.
-#' @param do_log1p A
-#' @param margin Same as margin in NormalizeData function from Seurat
-#'
-#' @return Returns a data frame containing RSME, Pearson correlation and Spearman correlation of the tested data.
-#' @export
-#'
-#' @examples
-#' \dontrun{
-#' evaluate_predictor(pipe, gex_test, adt_test)
-#' }
-evaluate_predictor <- function(pipe, gexp_test, adt_test, slot = "counts", normalize_gex = TRUE, normalize_adt = TRUE, margin = 2){
-
-  ### CLR transform test data
-  if(normalize_adt){
-    adt_test <- Seurat::NormalizeData(adt_test, normalization.method = "CLR", margin = margin)
-  }
-
-
-  predicted_adt <- adt_predict(pipe, gexp_test, slot = slot,  normalize = normalize_gex)
-
-  ## subset to features found in predicted and in test matrix
-  p_adt <- subset(predicted_adt,features = which(rownames(predicted_adt) %in% rownames(adt_test)) )
-  t_adt <- subset(adt_test,features = which(rownames(adt_test) %in% rownames(predicted_adt)) )
-
-  ## transpose to fit anndata format
-  p_adt_matrix <- Matrix::t(p_adt@data)
-  if(any(class(t_adt) %in% c("Assay", "Assay5"))){
-    t_adt_matrix <- Matrix::t(t_adt@data)
-  }else{
-    t_adt_matrix <- Matrix::t(t_adt)
-  }
-
-  ## reorder adt text matrix to the same order as predicted adt
-  t_adt_matrix <- t_adt_matrix[,match(colnames(p_adt_matrix), colnames(t_adt_matrix))]
-
-  p_adt_matrix_py <- reticulate::r_to_py(p_adt_matrix)
-  t_adt_matrix_py<- reticulate::r_to_py(t_adt_matrix)
-
-  ev_res <- evaluate$evaluate(p_adt_matrix_py, t_adt_matrix_py)
-  return_df <- data.frame(RMSE = ev_res[[1]], Pearson = ev_res[[2]], Spearman = ev_res[[3]])
-
-  return(return_df)
+evaluate_predictor <- function(predictor,gexp_test,adt_test, normalize_gex = TRUE, normalize_adt = TRUE, margin = 2){
+  predicted_adt <- predict(predictor,gexp_test,normalize_gex = normalize_gex)
+  if(class(adt_test)[1] == "Assay" |class(adt_test)[1] == "Assay5"){ adt_test <- Seurat::GetAssayData(adt_test, layer = 'counts') }
+  real_adt_clr <- t(Seurat::NormalizeData(adt_test, normalization.method = "CLR", margin = margin))
+  p_adt <- subset(predicted_adt,features = which(rownames(predicted_adt) %in% rownames(real_adt_clr)) )
+  t_adt <- subset(real_adt_clr,features = which(rownames(real_adt_clr) %in% rownames(predicted_adt)) )
+  err_sq <- (p_adt-t_adt)^2
+  # Not sure how to interpret the means of the single model metrics but for now just replicating the behaviour of python code
+  rmse <- mean(sqrt(colSums(err_sq)/nrow(err_sq)))
+  # Pearson calculated in a really strange way in python --> why would we average across cells and not across models (if at all?)
+  # Here deviating from python version and averaging across models
+  # Better --> keep model specific metrics. Some perform really well, others really poorly
+  # pearson <- mean(diag(cor(p_adt,t_adt,method = "pearson")))
+  pearson <- diag(cor(p_adt,t_adt,method = "pearson"))
+  # spearman <- mean(diag(cor(p_adt,t_adt,method = "spearman")))
+  spearman <- diag(cor(p_adt,t_adt,method = "spearman"))
+  return(list(rmse = rmse,pearson = pearson, spearman = spearman))
 }
 
-
-#' Load a pre-trained model
-#'
-#' @param pipe A ADT predictor object
-#' @param model Choose a pre-trained model to load. The pre-traines models were
-#' trained on the NeurIPS data. In most cases we would recommend to use the model ("all") trained on all
-#' cell types. models available: all, bcells, tcells, nkcells.
-#'
-#' @return pipe Returns the pipe with a loaded pre-trained model.
-#' @export
-#'
-#' @examples
-#' \dontrun{
-#' load_pretrained_model(pipe, model = "all")
-#' }
-load_pretrained_model <- function(pipe, model = "all", file = NULL){
-
-  if(is.null(file)){ # load a pretrained model
-    load_path <-  base::system.file("data",package = "scLinear")
-
-    m <- switch(model,
-             "all" = "ADTPredictor_neuripstrain_alltypes.joblib",
-             "bcell" = "ADTPredictor_neuripstrain_Bcells.joblib",
-             "nkcell" = "ADTPredictor_neuripstrain_NKcells.joblib",
-             "tcell" = "ADTPredictor_neuripstrain_Tcells.joblib")
-    pipe$load(paste0(load_path,"/",m))
-  }else{ # load from path
-    pipe$load(file)
+feature_importance <- function(predictor,gexp,layer_gexp,normalize_gex = TRUE){
+  if(!(predictor$zscore_relative_to_tsvd == 'after')){
+    print('Feature importance calculation not yet implemented for model with z-score normalization BEFORE tSVD')
+    return(NULL)
   }
-
-
-  return(pipe)
-
-}
-
-
-
-#' Save a trained model
-#'
-#' @param pipe A ADT predictor object
-#' @param file name to save the model
-#' @return pipe Returns the pipe with a loaded pre-trained model.
-#' @export
-#'
-#' @examples
-#' \dontrun{
-#' save_trained_model(pipe, file = "trained_pipe.joblib")
-#' }
-save_trained_model <- function(pipe, file=NULL){
-  if(!is.null(file)){
-    pipe$save(file)
-  }else{
-    stop("Please profide a valid filename.")
+  
+  if(any(class(gexp) %in% c("Seurat", "Assay", "Assay5"))){
+    gexp <- Seurat::GetAssayData(gexp, layer = layer_gexp)
+  }else{ # assume it is a matrix type
+    gexp <- Matrix::Matrix(gexp, sparse = TRUE)
   }
-  return(NULL)
+  
+  # Preprocessing equivalent to how it is done for fit & predict
+  if(normalize_gex){
+    gexp <- gexp_normalize(gexp)
+  }
+  
+  gexp <- filter_input_genes(gexp,predictor)
+  gexp <- Matrix::t(gexp)
+  
+  gexp_projected <- gexp %*% predictor$tsvd$v
+  
+  gexp_projected <- Matrix::t(apply(gexp_projected, 1, function(x) {
+    (x - mean(x)) / sd(x)
+  }
+  ))
+  
+  # Total gradient = W x J x t(v) where W = LM weights, J = Jacobian of z-score transformation and t(v) = Transpose of 'V' from tSVD
+  
+  # Get W
+  coeff_matrix <- matrix(nrow = ncol(gexp_projected)+1)
+  # Last coefficient usually 0 --> reason not quite clear but possibly because there is internal linear dependence (perhaps from z-score since all components should add up to mean 1?)
+  for(model in predictor$lms){
+    coeff_matrix <- cbind(coeff_matrix,model$coefficients)
+  }
+  coeff_matrix[is.na(coeff_matrix)] <- 0
+  # Drop the empty column from the coeff matrix (used only to initialize the object)
+  coeff_matrix <- coeff_matrix[,2:ncol(coeff_matrix)]
+  
+  # Drop the intercept --> not used for derivative d_prediction/d_gex --> constants drop from derivative
+  coeff_matrix <- t(coeff_matrix[2:nrow(coeff_matrix),])
+  
+  # Auxilliary function --> calculate jacobian of one cell so we can then apply this function across all cells
+  cellwise_jacobian <- function(cell_projection){
+    jacobian <- numDeriv::jacobian(func = function(x) {(x - mean(x)) / sd(x)}, cell_projection)
+  }
+  # Slow but that's a looooot of matrix multiplications to run so probably to be expected
+  Js <- apply(gexp_projected,1,cellwise_jacobian,simplify = FALSE)
+  
+  WJ <- lapply(Js,function(J){return(coeff_matrix %*% J)})
+  v_t <- Matrix::t(predictor$tsvd$v)
+  
+  WJV <- abind::abind(lapply(WJ,function(WJ){return(WJ %*% v_t)}), along = 3)
+  # Axis 1 = model, Axis 2 = Gene, Axis 3 = Cell --> taking mean 'across cells' = mean over margin of axis 1&2
+  feature_importance_means <- apply(WJV, c(1, 2), mean)
+  colnames(feature_importance_means) <- colnames(gexp)
+  rownames(feature_importance_means) <- names(predictor$lms)
+  
+  return(feature_importance_means)
 }
 
 
