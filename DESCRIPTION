@@ -31,3 +31,5 @@ Imports:
 	scuttle,
 	SingleCellExperiment,
 	sparsesvd
+LinkingTo: Rcpp
+SystemRequirenebts: C++11
