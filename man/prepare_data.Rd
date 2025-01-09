@@ -14,7 +14,7 @@ prepare_data(
   remove_empty_droplets = FALSE,
   lower = 100,
   FDR = 0.01,
-  annotation_selfCluster = FALSE,
+  annotation_selfCluster = TRUE,
   resolution = 0.8,
   seed = 42,
   return_plots = FALSE,

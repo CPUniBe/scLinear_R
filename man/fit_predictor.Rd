@@ -2,39 +2,56 @@
 % Please edit documentation in R/sclinear.R
 \name{fit_predictor}
 \alias{fit_predictor}
-\title{Train a predictor object}
+\title{Trains a prediction model to predict (CLR-transformed & Seurat normed) ADT expression levels based on gene expression data}
 \usage{
 fit_predictor(
-  pipe,
   gexp_train,
   adt_train,
   gexp_test = NULL,
-  slot_gex = "counts",
-  slot_adt = "counts",
+  layer_gex = "counts",
+  layer_adt = "counts",
   normalize_gex = TRUE,
   normalize_adt = TRUE,
-  margin = 2
+  margin = 2,
+  n_components = 300,
+  zscore_relative_to_tsvd = "after"
 )
 }
 \arguments{
-\item{pipe}{A predictor object}
+\item{gexp_train}{Seurat Object containing gene expression data in the layer specified by argument layer_gex}
 
-\item{adt_train}{ADT assay}
+\item{gexp_test}{Seurat Object of same form as gexp_train. If provided, the 'test-data' is used in the truncated singular value decomposition
+(affects how input gene expression data is projected into lower dimensional space) but is not used for training the actual ADT-predictor itself.
+Not yet implemented properly so gexp_test should be left NULL (default value)}
 
-\item{margin}{Same as margin in NormalizeData function from Seurat}
+\item{layer_gex}{From which layer of the Seurat Object should the gene expression data be extracted}
 
-\item{gex_train}{Gene expression assay}
+\item{layer_adt}{From which layer of the Seurat Object should the ADT expression data be extracted}
 
-\item{normalize}{Normalize GEX and ATD assay before fitting.}
+\item{normalize_gex}{Should gene expression levels be normalized across cells (see function gexp_normalize for details)}
+
+\item{normalize_adt}{Should ADT levels be normalized (using the NormalizeData function from the Seurat package with method CLR)}
+
+\item{margin}{Margin to apply CLR normalization over for ADT levels}
+
+\item{n_components}{Rank for the truncated singular value decomposition (= desired dimensionality of gene expression data after dimensionality reduction)}
+
+\item{zscore_relative_to_tsvd}{Specifies whether to apply z-score normalization to the gene expression data before or after tSVD projection.
+('before'/'after' otherwise skips z-score normalization entirely)}
+
+\item{adt_test}{Seurat Object containing ADT expression data in the layer specified by argument layer_adt (for the same cells as gexp_train)}
 }
 \value{
-pipe A trained predictor object
+A predictor in the form of a list containing the following components:
+\enumerate{
+\item 'tsvd': Singular value decomposition of training data. Necessary info so that gene expression data passed to the predictor can be subjected
+to the same dimensionality-reducing projection as the one applied during training of the predictor
+\item 'lms': List of the actual 'prediction models' with weights for each 'component' of the tSVD (one model per ADT)
+\item 'zscore_relative_to_tsvd': See explanation of input parameter with the same name. Saved in the output so that the same setting
+will also be used during the preprocessing of data during any subsequent uses of the predictor
+\item 'genes_considered': Genes used during training of the predictor (genes with any non-zero counts in the training data)
+}
 }
 \description{
-Train a predictor object
-}
-\examples{
-\dontrun{
-fit_predictor(pipe = pipe, gex_train = object@assays$RNA , adt_train = object@assays$ADT)
-}
+Trains a prediction model to predict (CLR-transformed & Seurat normed) ADT expression levels based on gene expression data
 }

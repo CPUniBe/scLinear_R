@@ -1,36 +1,31 @@
-Package: scLinear
+Package: scLineaR
 Title: Prediction of protein abundance from gene expression in scRNA-seq data.
-Version: 1.0.0
-Authors@R:
-    person("Daniel", "Hanhart", , "daniel.hanhart@unibe.ch", role = c("aut", "cre"),
-           comment = c(ORCID = "YOUR-ORCID-ID"))
-Description: What the package does (one paragraph).
+Version: 0.0.0.9000
+Authors@R: 
+    person("Marc", "Zimmerli", , "marc-zimmerli@hotmail.com", role = c("aut", "cre"))
+Description: .
 License: CC BY 4.0
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)
-RoxygenNote: 7.2.3
-Suggests:
-    testthat (>= 3.0.0)
-Config/testthat/edition: 3
-Remotes: github::JiaLiVUMC/scMRMA
-biocViews: Software
+RoxygenNote: 7.3.2
 Imports:
-    ggplot2,
-    intrinsicDimension,
-    magrittr,
-    reticulate,
-    scater,
-    scDblFinder,
-    Seurat,
-    tidyselect,
-    pals,
-    scran,
-    SingleCellExperiment,
-    DropletUtils,
-    Matrix,
-    scMRMA,
-    utils,
-    dplyr,
-    scuttle
-LinkingTo: Rcpp
-SystemRequirenebts: C++11
+	magrittr
+	intrinsicDimension
+	scMRMA
+	Seurat
+	SeuratObject
+	utils
+	dplyr
+	DropletUtils
+	ggplot2
+	pals
+	scater
+	scDblFinder
+	tidyselect
+	abind
+	Matrix
+	numDeriv
+	scran
+	scuttle
+	SingleCellExperiment
+	sparsesvd

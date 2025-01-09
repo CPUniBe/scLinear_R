@@ -94,6 +94,24 @@ prepare_data <- function(object, remove_doublets = TRUE, low_qc_cell_removal = T
 }
 
 
+#' Forces a gene expression input matrix to match the gene expression input used in training of a given predictor.
+#' Expression of genes which were not used in training the predictor is discarded, expression of genes used in training but not present in the input
+#' are set to 0. Also reorders columns so they match the expected order for the tSVD projection
+#' @param gexp gene expression matrix
+#' @param predictor predictor object created by fit_predictor function
+#' 
+#' @return gene expression matrix reshaped to match the set of genes used during training of the predictor (genes not present during training discarded, missing genes set to 0)
+filter_input_genes <- function(gexp,predictor){
+  to_add <- setdiff(predictor$genes_considered,row.names(gexp))
+  artificial_gene_counts <- Matrix::Matrix(0,nrow = length(to_add),ncol = ncol(gexp),
+                                           dimnames = list(to_add,colnames(gexp)))
+  Matrix::Matrix(as.array(rbind(gexp,artificial_gene_counts))[predictor$genes_considered,],sparse = TRUE)
+}
+
+
+
+
+
 #' Predict modalities based on gene expression data
 #'
 #' @param object A Seurat object
@@ -137,7 +155,30 @@ scLinear <- function(object, remove_doublets = TRUE, low_qc_cell_removal = TRUE,
 }
 
 
-
+# TODO: Dropping of 'test' data after tSVD training not yet implemented --> does not work in this case yet
+#' Trains a prediction model to predict (CLR-transformed & Seurat normed) ADT expression levels based on gene expression data
+#' 
+#' @param gexp_train Seurat Object containing gene expression data in the layer specified by argument layer_gex
+#' @param adt_test Seurat Object containing ADT expression data in the layer specified by argument layer_adt (for the same cells as gexp_train)
+#' @param gexp_test Seurat Object of same form as gexp_train. If provided, the 'test-data' is used in the truncated singular value decomposition
+#' (affects how input gene expression data is projected into lower dimensional space) but is not used for training the actual ADT-predictor itself.
+#' Not yet implemented properly so gexp_test should be left NULL (default value)
+#' @param layer_gex From which layer of the Seurat Object should the gene expression data be extracted
+#' @param layer_adt From which layer of the Seurat Object should the ADT expression data be extracted
+#' @param normalize_gex Should gene expression levels be normalized across cells (see function gexp_normalize for details)
+#' @param normalize_adt Should ADT levels be normalized (using the NormalizeData function from the Seurat package with method CLR)
+#' @param margin Margin to apply CLR normalization over for ADT levels
+#' @param n_components Rank for the truncated singular value decomposition (= desired dimensionality of gene expression data after dimensionality reduction)
+#' @param zscore_relative_to_tsvd Specifies whether to apply z-score normalization to the gene expression data before or after tSVD projection. 
+#' ('before'/'after' otherwise skips z-score normalization entirely)
+#' @return A predictor in the form of a list containing the following components:
+#' 1. 'tsvd': Singular value decomposition of training data. Necessary info so that gene expression data passed to the predictor can be subjected
+#' to the same dimensionality-reducing projection as the one applied during training of the predictor
+#' 2. 'lms': List of the actual 'prediction models' with weights for each 'component' of the tSVD (one model per ADT)
+#' 3. 'zscore_relative_to_tsvd': See explanation of input parameter with the same name. Saved in the output so that the same setting
+#' will also be used during the preprocessing of data during any subsequent uses of the predictor
+#' 4. 'genes_considered': Genes used during training of the predictor (genes with any non-zero counts in the training data)
+#' @export
 fit_predictor <- function(gexp_train,adt_train, gexp_test = NULL,
                             layer_gex = "counts", layer_adt = "counts",
                             normalize_gex = TRUE,normalize_adt = TRUE, margin = 2,
@@ -149,10 +190,80 @@ fit_predictor <- function(gexp_train,adt_train, gexp_test = NULL,
   if(!is.null(gexp_test)){
     if(class(gexp_test)[1] == "Assay" |class(gexp_test)[1] == "Assay5"){ gexp_test <- Seurat::GetAssayData(gexp_test, layer = layer_gex) }
   }
+  
+  
+  #TODO: Change it so normalization happens for both train and test at the same time 
+  if(normalize_gex){
+    gexp_train <- gexp_normalize(gexp_train)
+    if( !is.null(gexp_test)){gexp_test <- gexp_normalize(gexp_test)}
+  }
+  if(normalize_adt){
+    adt_train <- Seurat::NormalizeData(adt_train, normalization.method = "CLR", margin = margin)
+  }
+  
+  # The way the sets are generated, same gene names should be a given (stem from same dataset just split)
+  if(!is.null(gexp_test)){
+    training_set <- Matrix::t(cbind(gexp_train,gexp_test))
+  }else{training_set <- Matrix::t(gexp_train)}
+  
+  # Drop cells with total count (<)=0
+  # Technically works but too slow for sparse matrices
+  # training_set <- training_set[Matrix::rowSums(training_set)>0,]
+  
+  # Keep all genes expressed in at least one cell
+  keep_genes <- apply(training_set,2,function(x){any(x!=0)})
+  keep_genes <- names(keep_genes[keep_genes])
+  # Keep all cells 
+  keep_cells <- apply(training_set,1,function(x){any(x!=0)})
+  keep_cells <- names(keep_cells[keep_cells])
+  
+  training_set <- as.array(training_set)
+  training_set <- Matrix::Matrix(training_set[keep_cells,keep_genes],sparse = TRUE)
+  
+  # z-score normalization --> transpose after applying z-score is necessary to get THE SAME dimension as the input
+  if(zscore_relative_to_tsvd == 'before'){
+    training_set <- Matrix::t(apply(training_set, 1, function(x) {
+      (x - mean(x)) / sd(x)
+    }
+    ))
+  }
+  
+  # Create tSVD decomposition
+  trained_tsvd <- sparsesvd::sparsesvd(training_set,rank = n_components)
+  
+  # apply tSVD projection on input data
+  training_set <- training_set %*% trained_tsvd$v
+  # z-score normalizaton
+  
+  if(zscore_relative_to_tsvd == 'after'){
+    training_set <- Matrix::t(apply(training_set, 1, function(x) {
+      (x - mean(x)) / sd(x)
+    }
+    ))
+  }
+  
+  # transposed to match expected input format for lm
+  # here the indexing works rather quickly --> no conversion to array necessary
+  adt_train_modelling <- Matrix::t(adt_train)[keep_cells,]
+  
+  
+  # Fit linear models for all ADTs
+  lm_results <- apply(adt_train_modelling, 2, function(y) lm(y ~ training_set))
+  return(list(tsvd=trained_tsvd,lms=lm_results,zscore_relative_to_tsvd = zscore_relative_to_tsvd,
+              genes_considered = keep_genes))
 }
 
 # Why set prediction to 0 if negative? We're trying to predict the CLR of ADT not ADT itself --> can be negative
 # For some reason this never seems to be the case
+#' Predicts ADT levels based on the gene expression levels.
+#' @param predictor predictor trained with 'fit_predictor' function
+#' @param gexp Seurat Object containing gene expression data in the layer specified by argument layer
+#' @param layer From which layer of the Seurat Object should the gene expression data be extracted
+#' @param normalize_gex Should gene expression levels be normalized across cells (see function gexp_normalize for details)
+#' 
+#' @return Predicted ADT levels. If ADT levels have been normalized during predictor training (default behaviour), the predicted ADT levels should also be considered 'normalized' in the same way.
+#' 
+#' @export 
 predict <- function(predictor,gexp,layer="counts",normalize_gex=TRUE){
   
   if(any(class(gexp) %in% c("Seurat", "Assay", "Assay5"))){
@@ -202,9 +313,24 @@ predict <- function(predictor,gexp,layer="counts",normalize_gex=TRUE){
   return(res)
 }
 
-evaluate_predictor <- function(predictor,gexp_test,adt_test, normalize_gex = TRUE, normalize_adt = TRUE, margin = 2){
-  predicted_adt <- predict(predictor,gexp_test,normalize_gex = normalize_gex)
-  if(class(adt_test)[1] == "Assay" |class(adt_test)[1] == "Assay5"){ adt_test <- Seurat::GetAssayData(adt_test, layer = 'counts') }
+#' Reports the mean RMSE of all ADT-specific regression models as well as the Pearson-/ & Spearman correlation coefficients
+#' between predicted and measured ADT for each model separately
+#' Unlike other predictor related functions, layers
+#' @param predictor ADT-predictor (of form as produced by fit_predictor function) whose performance should be evaluated 
+#' @param gexp_test Seurat object containing gene expression data to use for ADT level prediction
+#' @param adt_test Measured ADT levels to which the predicted ADT levels are to be compared
+#' @param gexp_layer From which layer of the Seurat Object should the gene expression data be extracted
+#' @param adt_layer From which layer of the Seurat Object should the gene expression data be extracted
+#' @param normalize_gex Should gene expression levels be normalized across cells (see function gexp_normalize for details)
+#' @param normalize_adt Should ADT levels be normalized (using the NormalizeData function from the Seurat package with method CLR) --> this needs
+#' to be the same as the setting used during training of the prediction model.
+#' @param margin Margin to apply CLR normalization over for ADT levels
+#' 
+#' @return List of metrics for model performance (Mean RMSE of all models and ADT-specific correlation coefficients between predicted and measured ADT Values)
+#' @export
+evaluate_predictor <- function(predictor,gexp_test,adt_test,gexp_layer = 'counts', adt_layer = 'counts', normalize_gex = TRUE, normalize_adt = TRUE, margin = 2){
+  predicted_adt <- predict(predictor,gexp_test,layer = gexp_layer, normalize_gex = normalize_gex)
+  if(class(adt_test)[1] == "Assay" |class(adt_test)[1] == "Assay5"){ adt_test <- Seurat::GetAssayData(adt_test, layer = adt_layer) }
   real_adt_clr <- t(Seurat::NormalizeData(adt_test, normalization.method = "CLR", margin = margin))
   p_adt <- subset(predicted_adt,features = which(rownames(predicted_adt) %in% rownames(real_adt_clr)) )
   t_adt <- subset(real_adt_clr,features = which(rownames(real_adt_clr) %in% rownames(predicted_adt)) )
@@ -212,15 +338,30 @@ evaluate_predictor <- function(predictor,gexp_test,adt_test, normalize_gex = TRU
   # Not sure how to interpret the means of the single model metrics but for now just replicating the behaviour of python code
   rmse <- mean(sqrt(colSums(err_sq)/nrow(err_sq)))
   # Pearson calculated in a really strange way in python --> why would we average across cells and not across models (if at all?)
-  # Here deviating from python version and averaging across models
-  # Better --> keep model specific metrics. Some perform really well, others really poorly
-  # pearson <- mean(diag(cor(p_adt,t_adt,method = "pearson")))
+  # Here reporting the correlation coefficients of each ADT prediction separately
   pearson <- diag(cor(p_adt,t_adt,method = "pearson"))
   # spearman <- mean(diag(cor(p_adt,t_adt,method = "spearman")))
   spearman <- diag(cor(p_adt,t_adt,method = "spearman"))
   return(list(rmse = rmse,pearson = pearson, spearman = spearman))
 }
 
+#' Feature Importance
+#' 
+#' Only implemented for the case where z-score normalization was applied AFTER dimensionality reduction. \cr
+#' Calculates the derivative of the predicted level of a given ADT as a function of the expression levels of a single gene 'dADT/dGene'\cr
+#' Obtained by decomposing d(ADT)/d(Gene) = WJV where\cr
+#' W = d(ADT)/d(zscores)\cr
+#' J = d(zscores)/d(tSVD components)\cr
+#' V = d(tSVD components)/d(gene expression)\cr
+#' W and V directly correspond to the weights of the linear regression model & the right singular vectors of the tSVD.\cr
+#' However, the effect of the z-score normalization had to be numerically approximated using the function 'jacobian' from the package 'numDeriv'.
+#' @param predictor Predictor created by fit_predictor function
+#' @param gexp Seurat object containing gene expression data
+#' @param layer_gexp From which layer of the gexp Seurat Object should the gene expression data be extracted
+#' @param normalize_gex Should gene expression levels be normalized across cells (see function gexp_normalize for details)
+#' 
+#' @return Effect of the expression level of each gene on the prediction of the ADT values (averaged across all cells present in the input).
+#' @export
 feature_importance <- function(predictor,gexp,layer_gexp,normalize_gex = TRUE){
   if(!(predictor$zscore_relative_to_tsvd == 'after')){
     print('Feature importance calculation not yet implemented for model with z-score normalization BEFORE tSVD')
