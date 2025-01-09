@@ -35,3 +35,4 @@ Imports:
 	scMRMA
 LinkingTo: Rcpp
 SystemRequirements: C++11
+biocViews: Software, AnnotationData
