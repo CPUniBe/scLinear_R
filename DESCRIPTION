@@ -12,6 +12,7 @@ Remotes: github::JiaLiVUMC/scMRMA
 biocViews:
 Imports:
 	magrittr,
+	BiocManager,
 	intrinsicDimension,
 	Seurat,
 	SeuratObject,
