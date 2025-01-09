@@ -13,7 +13,6 @@ biocViews: Software
 Imports:
 	magrittr,
 	intrinsicDimension,
-	scMRMA,
 	Seurat,
 	SeuratObject,
 	utils,
@@ -30,6 +29,7 @@ Imports:
 	scran,
 	scuttle,
 	SingleCellExperiment,
-	sparsesvd
+	sparsesvd,
+	scMRMA
 LinkingTo: Rcpp
-SystemRequirenebts: C++11
+SystemRequirements: C++11
