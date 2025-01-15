@@ -18,7 +18,7 @@ scLinear(
   resolution = 0.8,
   seed = 42,
   return_plots = FALSE,
-  model = "all",
+  model = "model_full_neurips",
   assay_name = "RNA",
   print_plots = FALSE,
   species = "Hs",

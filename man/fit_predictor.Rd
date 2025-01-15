@@ -14,7 +14,8 @@ fit_predictor(
   normalize_adt = TRUE,
   margin = 2,
   n_components = 300,
-  zscore_relative_to_tsvd = "after"
+  zscore_relative_to_tsvd = "after",
+  n_cores = NULL
 )
 }
 \arguments{
@@ -39,14 +40,15 @@ Not yet implemented properly so gexp_test should be left NULL (default value)}
 \item{zscore_relative_to_tsvd}{Specifies whether to apply z-score normalization to the gene expression data before or after tSVD projection.
 ('before'/'after' otherwise skips z-score normalization entirely)}
 
+\item{n_cores}{Number of cores made available for parallelization of lm-fitting. Defaults to all 'available' cores minus 4.}
+
 \item{adt_test}{Seurat Object containing ADT expression data in the layer specified by argument layer_adt (for the same cells as gexp_train)}
 }
 \value{
 A predictor in the form of a list containing the following components:
 \enumerate{
-\item 'tsvd': Singular value decomposition of training data. Necessary info so that gene expression data passed to the predictor can be subjected
-to the same dimensionality-reducing projection as the one applied during training of the predictor
-\item 'lms': List of the actual 'prediction models' with weights for each 'component' of the tSVD (one model per ADT)
+\item 'tsvd_v': Right singular vector of tsvd used for dimensionality reduction
+\item 'lm_coefficients': List of the actual 'prediction models' with weights for each 'component' of the tSVD (one model per ADT)
 \item 'zscore_relative_to_tsvd': See explanation of input parameter with the same name. Saved in the output so that the same setting
 will also be used during the preprocessing of data during any subsequent uses of the predictor
 \item 'genes_considered': Genes used during training of the predictor (genes with any non-zero counts in the training data)

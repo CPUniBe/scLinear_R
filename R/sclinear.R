@@ -99,7 +99,7 @@ prepare_data <- function(object, remove_doublets = TRUE, low_qc_cell_removal = T
 #' are set to 0. Also reorders columns so they match the expected order for the tSVD projection
 #' @param gexp gene expression matrix
 #' @param predictor predictor object created by fit_predictor function
-#' 
+#'
 #' @return gene expression matrix reshaped to match the set of genes used during training of the predictor (genes not present during training discarded, missing genes set to 0)
 filter_input_genes <- function(gexp,predictor){
   to_add <- setdiff(predictor$genes_considered,row.names(gexp))
@@ -123,7 +123,7 @@ filter_input_genes <- function(gexp,predictor){
 #' \dontrun{
 #' sobj <- scLinear(object = sobj)
 #' }
-scLinear <- function(object, remove_doublets = TRUE, low_qc_cell_removal = TRUE, anno_level = 2, samples = NULL, integrate_data = FALSE, remove_empty_droplets = FALSE, lower = 100, FDR = 0.01, annotation_selfCluster = TRUE, resolution = 0.8, seed = 42, return_plots = FALSE, model = "all", assay_name = "RNA", print_plots = FALSE, species = "Hs", min.features = NULL, verbose = FALSE){
+scLinear <- function(object, remove_doublets = TRUE, low_qc_cell_removal = TRUE, anno_level = 2, samples = NULL, integrate_data = FALSE, remove_empty_droplets = FALSE, lower = 100, FDR = 0.01, annotation_selfCluster = TRUE, resolution = 0.8, seed = 42, return_plots = FALSE, model = "model_full_neurips", assay_name = "RNA", print_plots = FALSE, species = "Hs", min.features = NULL, verbose = FALSE){
   set.seed(seed)
   object <- prepare_data(object,
                          remove_doublets = remove_doublets,
@@ -143,21 +143,18 @@ scLinear <- function(object, remove_doublets = TRUE, low_qc_cell_removal = TRUE,
                          min.features = min.features,
                          verbose = verbose)
 
-  pipe <- create_adt_predictor()
-  pipe <- load_pretrained_model(pipe, model = model)
+  pipe <- readRDS(model)
 
-  object[["predicted_ADT"]] <-  adt_predict(pipe = pipe,
-                                                  gexp = Seurat::GetAssay(object, assay = assay_name),
-                                                  normalize = TRUE)
+  object[["predicted_ADT"]] <-  predict(pipe,gexp = Seurat::GetAssay(object, assay = assay_name))
 
   return(object)
 
 }
 
 
-# TODO: Dropping of 'test' data after tSVD training not yet implemented --> does not work in this case yet
+
 #' Trains a prediction model to predict (CLR-transformed & Seurat normed) ADT expression levels based on gene expression data
-#' 
+#'
 #' @param gexp_train Seurat Object containing gene expression data in the layer specified by argument layer_gex
 #' @param adt_test Seurat Object containing ADT expression data in the layer specified by argument layer_adt (for the same cells as gexp_train)
 #' @param gexp_test Seurat Object of same form as gexp_train. If provided, the 'test-data' is used in the truncated singular value decomposition
@@ -169,12 +166,12 @@ scLinear <- function(object, remove_doublets = TRUE, low_qc_cell_removal = TRUE,
 #' @param normalize_adt Should ADT levels be normalized (using the NormalizeData function from the Seurat package with method CLR)
 #' @param margin Margin to apply CLR normalization over for ADT levels
 #' @param n_components Rank for the truncated singular value decomposition (= desired dimensionality of gene expression data after dimensionality reduction)
-#' @param zscore_relative_to_tsvd Specifies whether to apply z-score normalization to the gene expression data before or after tSVD projection. 
+#' @param zscore_relative_to_tsvd Specifies whether to apply z-score normalization to the gene expression data before or after tSVD projection.
 #' ('before'/'after' otherwise skips z-score normalization entirely)
+#' @param n_cores Number of cores made available for parallelization of lm-fitting. Defaults to all 'available' cores minus 4.
 #' @return A predictor in the form of a list containing the following components:
-#' 1. 'tsvd': Singular value decomposition of training data. Necessary info so that gene expression data passed to the predictor can be subjected
-#' to the same dimensionality-reducing projection as the one applied during training of the predictor
-#' 2. 'lms': List of the actual 'prediction models' with weights for each 'component' of the tSVD (one model per ADT)
+#' 1. 'tsvd_v': Right singular vector of tsvd used for dimensionality reduction
+#' 2. 'lm_coefficients': List of the actual 'prediction models' with weights for each 'component' of the tSVD (one model per ADT)
 #' 3. 'zscore_relative_to_tsvd': See explanation of input parameter with the same name. Saved in the output so that the same setting
 #' will also be used during the preprocessing of data during any subsequent uses of the predictor
 #' 4. 'genes_considered': Genes used during training of the predictor (genes with any non-zero counts in the training data)
@@ -182,17 +179,17 @@ scLinear <- function(object, remove_doublets = TRUE, low_qc_cell_removal = TRUE,
 fit_predictor <- function(gexp_train,adt_train, gexp_test = NULL,
                             layer_gex = "counts", layer_adt = "counts",
                             normalize_gex = TRUE,normalize_adt = TRUE, margin = 2,
-                            n_components = 300, zscore_relative_to_tsvd = 'after'){
-  
+                            n_components = 300, zscore_relative_to_tsvd = 'after',n_cores = NULL){
+  # If no number is specified, get number of available cores and omit 4 to avoid using up all system resources
+  if(is.null(n_cores)){n_cores <- parallelly::availableCores(omit = 4)}
   # If objects are passed as matrices, leave as is. If passed as Seurat objects --> extract count data for assays
   if(class(gexp_train)[1] == "Assay" | class(gexp_train)[1] == "Assay5"){ gexp_train <- Seurat::GetAssayData(gexp_train, layer = layer_gex) }
   if(class(adt_train)[1] == "Assay" | class(adt_train)[1] == "Assay5"){ adt_train <- Seurat::GetAssayData(adt_train, layer = layer_adt) }
   if(!is.null(gexp_test)){
     if(class(gexp_test)[1] == "Assay" |class(gexp_test)[1] == "Assay5"){ gexp_test <- Seurat::GetAssayData(gexp_test, layer = layer_gex) }
   }
-  
-  
-  #TODO: Change it so normalization happens for both train and test at the same time 
+
+  #TODO: Change it so normalization happens for both train and test at the same time
   if(normalize_gex){
     gexp_train <- gexp_normalize(gexp_train)
     if( !is.null(gexp_test)){gexp_test <- gexp_normalize(gexp_test)}
@@ -200,26 +197,15 @@ fit_predictor <- function(gexp_train,adt_train, gexp_test = NULL,
   if(normalize_adt){
     adt_train <- Seurat::NormalizeData(adt_train, normalization.method = "CLR", margin = margin)
   }
-  
+
   # The way the sets are generated, same gene names should be a given (stem from same dataset just split)
   if(!is.null(gexp_test)){
     training_set <- Matrix::t(cbind(gexp_train,gexp_test))
   }else{training_set <- Matrix::t(gexp_train)}
-  
-  # Drop cells with total count (<)=0
-  # Technically works but too slow for sparse matrices
-  # training_set <- training_set[Matrix::rowSums(training_set)>0,]
-  
+
   # Keep all genes expressed in at least one cell
-  keep_genes <- apply(training_set,2,function(x){any(x!=0)})
-  keep_genes <- names(keep_genes[keep_genes])
-  # Keep all cells 
-  keep_cells <- apply(training_set,1,function(x){any(x!=0)})
-  keep_cells <- names(keep_cells[keep_cells])
-  
-  training_set <- as.array(training_set)
-  training_set <- Matrix::Matrix(training_set[keep_cells,keep_genes],sparse = TRUE)
-  
+  training_set <- training_set[unique(Matrix::summary(training_set)$i),unique(Matrix::summary(training_set)$j)]
+  keep_genes <- colnames(training_set)
   # z-score normalization --> transpose after applying z-score is necessary to get THE SAME dimension as the input
   if(zscore_relative_to_tsvd == 'before'){
     training_set <- Matrix::t(apply(training_set, 1, function(x) {
@@ -227,29 +213,46 @@ fit_predictor <- function(gexp_train,adt_train, gexp_test = NULL,
     }
     ))
   }
-  
   # Create tSVD decomposition
+  print('Calculating truncated singular value decomposition - for large input matrices this may take several minutes')
   trained_tsvd <- sparsesvd::sparsesvd(training_set,rank = n_components)
-  
   # apply tSVD projection on input data
   training_set <- training_set %*% trained_tsvd$v
   # z-score normalizaton
-  
+
   if(zscore_relative_to_tsvd == 'after'){
     training_set <- Matrix::t(apply(training_set, 1, function(x) {
       (x - mean(x)) / sd(x)
     }
     ))
   }
-  
+
+  # If lm-test-data was used for tsvd training step, reduce lm input back to only train data
+  training_set <- training_set[intersect(colnames(gexp_train),rownames(training_set)),]
+
+  # Filter out adt data for cells dropped due to RNA 0-counts
   # transposed to match expected input format for lm
   # here the indexing works rather quickly --> no conversion to array necessary
-  adt_train_modelling <- Matrix::t(adt_train)[keep_cells,]
-  
-  
-  # Fit linear models for all ADTs
-  lm_results <- apply(adt_train_modelling, 2, function(y) lm(y ~ training_set))
-  return(list(tsvd=trained_tsvd,lms=lm_results,zscore_relative_to_tsvd = zscore_relative_to_tsvd,
+  adt_train_modelling <- Matrix::t(adt_train)[intersect(rownames(training_set),colnames(adt_train)),]
+
+
+  rm(gexp_train,gexp_test)
+  print('Fitting linear models')
+  cl <- parallel::makeCluster(n_cores,outfile = 'lm_log.txt')
+  parallel::clusterExport(cl,list("training_set","adt_train_modelling"),envir = environment())
+  parallel::clusterEvalQ(cl,library(Matrix))
+  results <- pbapply::pblapply(cl = cl, X = 1:ncol(adt_train_modelling), FUN = function(i) {
+    tryCatch({
+      return(lm(adt_train_modelling[, i] ~ training_set)$coefficients)  # Fit a linear model
+    }, error = function(e) {
+      message("Error fitting model for response ", i, ": ", e$message)
+      return(NULL)  # Return NULL if there's an error
+    })
+  })
+  parallel::stopCluster(cl)
+  file.remove('lm_log.txt')
+  names(results) <- colnames(adt_train_modelling)
+  return(list(tsvd_v=trained_tsvd$v,lm_coefficients=results,zscore_relative_to_tsvd = zscore_relative_to_tsvd,
               genes_considered = keep_genes))
 }
 
@@ -260,63 +263,62 @@ fit_predictor <- function(gexp_train,adt_train, gexp_test = NULL,
 #' @param gexp Seurat Object containing gene expression data in the layer specified by argument layer
 #' @param layer From which layer of the Seurat Object should the gene expression data be extracted
 #' @param normalize_gex Should gene expression levels be normalized across cells (see function gexp_normalize for details)
-#' 
+#'
 #' @return Predicted ADT levels. If ADT levels have been normalized during predictor training (default behaviour), the predicted ADT levels should also be considered 'normalized' in the same way.
-#' 
-#' @export 
+#'
+#' @export
 predict <- function(predictor,gexp,layer="counts",normalize_gex=TRUE){
-  
   if(any(class(gexp) %in% c("Seurat", "Assay", "Assay5"))){
     gexp <- Seurat::GetAssayData(gexp, layer = layer)
   }else{ # assume it is a matrix type
     gexp <- Matrix::Matrix(gexp, sparse = TRUE)
   }
-  
+
   if(normalize_gex){
     gexp <- gexp_normalize(gexp)
   }
-  
+
   # Bring into shape cells x genes (done during training in the step which combines train & test)
   gexp <- filter_input_genes(gexp,predictor)
   gexp <- Matrix::t(gexp)
-  
+
   if(predictor$zscore_relative_to_tsvd == 'before'){
     gexp <- Matrix::t(apply(gexp, 1, function(x) {
       (x - mean(x)) / sd(x)
     }
-    ))  
+    ))
   }
-  
-  gexp_projected <- gexp %*% predictor$tsvd$v
-  
+
+  gexp_projected <- gexp %*% predictor$tsvd_v
+
   if(predictor$zscore_relative_to_tsvd == 'after'){
     gexp_projected <- Matrix::t(apply(gexp_projected, 1, function(x) {
       (x - mean(x)) / sd(x)
     }
     ))
   }
-  
+
   coeff_matrix <- matrix(nrow = ncol(gexp_projected)+1)
-  # Last coefficient usually 0 --> reason not quite clear but possibly because there is internal linear dependence
-  for(model in predictor$lms){
-    coeff_matrix <- cbind(coeff_matrix,model$coefficients)
+  # Last coefficient usually 0 --> reason not quite clear. Does z-score normalization introduce linear dependence since mean must be 0
+  for(model in predictor$lm_coefficients){
+    coeff_matrix <- cbind(coeff_matrix,model)
   }
   coeff_matrix[is.na(coeff_matrix)] <- 0
   # Drop the empty column from the coeff matrix (used only to initialize the object)
   coeff_matrix <- coeff_matrix[,2:ncol(coeff_matrix)]
-  
+
   # Add column of 1s 'to the left' of the tSVD projection of the test data --> adds intercept of each model (intercept is the first coefficient of the lm)
   lm_input <- cbind(rep(1,nrow(gexp_projected)),gexp_projected)
   # Multiply tSVD projected & normed input data with LM coefficients
   res <- lm_input %*% coeff_matrix
-  colnames(res) <- names(predictor$lms)
+  colnames(res) <- names(predictor$lm_coefficients)
   return(res)
 }
 
 #' Reports the mean RMSE of all ADT-specific regression models as well as the Pearson-/ & Spearman correlation coefficients
 #' between predicted and measured ADT for each model separately
 #' Unlike other predictor related functions, layers
-#' @param predictor ADT-predictor (of form as produced by fit_predictor function) whose performance should be evaluated 
+#' @param predictor ADT-predictor (of form as produced by fit_predictor function) whose performance should be evaluated
 #' @param gexp_test Seurat object containing gene expression data to use for ADT level prediction
 #' @param adt_test Measured ADT levels to which the predicted ADT levels are to be compared
 #' @param gexp_layer From which layer of the Seurat Object should the gene expression data be extracted
@@ -325,28 +327,40 @@ predict <- function(predictor,gexp,layer="counts",normalize_gex=TRUE){
 #' @param normalize_adt Should ADT levels be normalized (using the NormalizeData function from the Seurat package with method CLR) --> this needs
 #' to be the same as the setting used during training of the prediction model.
 #' @param margin Margin to apply CLR normalization over for ADT levels
-#' 
+#'
 #' @return List of metrics for model performance (Mean RMSE of all models and ADT-specific correlation coefficients between predicted and measured ADT Values)
 #' @export
 evaluate_predictor <- function(predictor,gexp_test,adt_test,gexp_layer = 'counts', adt_layer = 'counts', normalize_gex = TRUE, normalize_adt = TRUE, margin = 2){
+
   predicted_adt <- predict(predictor,gexp_test,layer = gexp_layer, normalize_gex = normalize_gex)
   if(class(adt_test)[1] == "Assay" |class(adt_test)[1] == "Assay5"){ adt_test <- Seurat::GetAssayData(adt_test, layer = adt_layer) }
-  real_adt_clr <- t(Seurat::NormalizeData(adt_test, normalization.method = "CLR", margin = margin))
-  p_adt <- subset(predicted_adt,features = which(rownames(predicted_adt) %in% rownames(real_adt_clr)) )
-  t_adt <- subset(real_adt_clr,features = which(rownames(real_adt_clr) %in% rownames(predicted_adt)) )
+  if(normalize_adt){
+    adt_test <- t(Seurat::NormalizeData(adt_test, normalization.method = "CLR", margin = margin))
+  }else{
+      # Converting from Matrix::Matrix to base Matrix (and transposing)
+      adt_test <- as.matrix(Matrix::t(adt_test))
+      }
+
+  p_adt <- subset(predicted_adt,features = which(colnames(predicted_adt) %in% colnames(adt_test)) )
+  t_adt <- subset(adt_test,features = which(colnames(adt_test) %in% colnames(predicted_adt)) )
+
+  t_adt <- t_adt[match(rownames(p_adt),rownames(t_adt)),match(colnames(p_adt),colnames(t_adt))]
   err_sq <- (p_adt-t_adt)^2
   # Not sure how to interpret the means of the single model metrics but for now just replicating the behaviour of python code
   rmse <- mean(sqrt(colSums(err_sq)/nrow(err_sq)))
   # Pearson calculated in a really strange way in python --> why would we average across cells and not across models (if at all?)
   # Here reporting the correlation coefficients of each ADT prediction separately
-  pearson <- diag(cor(p_adt,t_adt,method = "pearson"))
-  # spearman <- mean(diag(cor(p_adt,t_adt,method = "spearman")))
-  spearman <- diag(cor(p_adt,t_adt,method = "spearman"))
-  return(list(rmse = rmse,pearson = pearson, spearman = spearman))
+  pearson <- diag(cor(t_adt,p_adt,method = "pearson"))
+  spearman <- diag(cor(t_adt,p_adt,method = "spearman"))
+  # Original behaviour:
+  mean_pearson <- mean(unlist(lapply(1:nrow(t_adt),function(i) cor(t_adt[i,],p_adt[i,],method = 'pearson'))))
+  mean_spearman <- mean(unlist(lapply(1:nrow(t_adt),function(i) cor(t_adt[i,],p_adt[i,],method = 'spearman'))))
+  browser()
+  return(list(rmse = rmse,pearson = pearson, spearman = spearman, mean_pearson = mean_pearson, mean_spearman = mean_spearman))
 }
 
 #' Feature Importance
-#' 
+#'
 #' Only implemented for the case where z-score normalization was applied AFTER dimensionality reduction. \cr
 #' Calculates the derivative of the predicted level of a given ADT as a function of the expression levels of a single gene 'dADT/dGene'\cr
 #' Obtained by decomposing d(ADT)/d(Gene) = WJV where\cr
@@ -359,7 +373,7 @@ evaluate_predictor <- function(predictor,gexp_test,adt_test,gexp_layer = 'counts
 #' @param gexp Seurat object containing gene expression data
 #' @param layer_gexp From which layer of the gexp Seurat Object should the gene expression data be extracted
 #' @param normalize_gex Should gene expression levels be normalized across cells (see function gexp_normalize for details)
-#' 
+#'
 #' @return Effect of the expression level of each gene on the prediction of the ADT values (averaged across all cells present in the input).
 #' @export
 feature_importance <- function(predictor,gexp,layer_gexp,normalize_gex = TRUE){
@@ -367,59 +381,59 @@ feature_importance <- function(predictor,gexp,layer_gexp,normalize_gex = TRUE){
     print('Feature importance calculation not yet implemented for model with z-score normalization BEFORE tSVD')
     return(NULL)
   }
-  
+
   if(any(class(gexp) %in% c("Seurat", "Assay", "Assay5"))){
     gexp <- Seurat::GetAssayData(gexp, layer = layer_gexp)
   }else{ # assume it is a matrix type
     gexp <- Matrix::Matrix(gexp, sparse = TRUE)
   }
-  
+
   # Preprocessing equivalent to how it is done for fit & predict
   if(normalize_gex){
     gexp <- gexp_normalize(gexp)
   }
-  
+
   gexp <- filter_input_genes(gexp,predictor)
   gexp <- Matrix::t(gexp)
-  
-  gexp_projected <- gexp %*% predictor$tsvd$v
-  
+
+  gexp_projected <- gexp %*% predictor$tsvd_v
+
   gexp_projected <- Matrix::t(apply(gexp_projected, 1, function(x) {
     (x - mean(x)) / sd(x)
   }
   ))
-  
+
   # Total gradient = W x J x t(v) where W = LM weights, J = Jacobian of z-score transformation and t(v) = Transpose of 'V' from tSVD
-  
+
   # Get W
   coeff_matrix <- matrix(nrow = ncol(gexp_projected)+1)
   # Last coefficient usually 0 --> reason not quite clear but possibly because there is internal linear dependence (perhaps from z-score since all components should add up to mean 1?)
-  for(model in predictor$lms){
-    coeff_matrix <- cbind(coeff_matrix,model$coefficients)
+  for(model in predictor$lm_coefficients){
+    coeff_matrix <- cbind(coeff_matrix,model)
   }
   coeff_matrix[is.na(coeff_matrix)] <- 0
   # Drop the empty column from the coeff matrix (used only to initialize the object)
   coeff_matrix <- coeff_matrix[,2:ncol(coeff_matrix)]
-  
+
   # Drop the intercept --> not used for derivative d_prediction/d_gex --> constants drop from derivative
   coeff_matrix <- t(coeff_matrix[2:nrow(coeff_matrix),])
-  
+
   # Auxilliary function --> calculate jacobian of one cell so we can then apply this function across all cells
   cellwise_jacobian <- function(cell_projection){
     jacobian <- numDeriv::jacobian(func = function(x) {(x - mean(x)) / sd(x)}, cell_projection)
   }
   # Slow but that's a looooot of matrix multiplications to run so probably to be expected
   Js <- apply(gexp_projected,1,cellwise_jacobian,simplify = FALSE)
-  
+
   WJ <- lapply(Js,function(J){return(coeff_matrix %*% J)})
-  v_t <- Matrix::t(predictor$tsvd$v)
-  
+  v_t <- Matrix::t(predictor$tsvd_v)
+
   WJV <- abind::abind(lapply(WJ,function(WJ){return(WJ %*% v_t)}), along = 3)
   # Axis 1 = model, Axis 2 = Gene, Axis 3 = Cell --> taking mean 'across cells' = mean over margin of axis 1&2
   feature_importance_means <- apply(WJV, c(1, 2), mean)
   colnames(feature_importance_means) <- colnames(gexp)
-  rownames(feature_importance_means) <- names(predictor$lms)
-  
+  rownames(feature_importance_means) <- names(predictor$lm_coefficients)
+
   return(feature_importance_means)
 }
 
