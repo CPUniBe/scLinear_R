@@ -355,7 +355,6 @@ evaluate_predictor <- function(predictor,gexp_test,adt_test,gexp_layer = 'counts
   # Original behaviour:
   mean_pearson <- mean(unlist(lapply(1:nrow(t_adt),function(i) cor(t_adt[i,],p_adt[i,],method = 'pearson'))))
   mean_spearman <- mean(unlist(lapply(1:nrow(t_adt),function(i) cor(t_adt[i,],p_adt[i,],method = 'spearman'))))
-  browser()
   return(list(rmse = rmse,pearson = pearson, spearman = spearman, mean_pearson = mean_pearson, mean_spearman = mean_spearman))
 }
 
