@@ -4,3 +4,14 @@ padt
 tadt
 pbmc10k_prepared.rds
 Pretrain.R
+deriv_check.R
+coeff_m
+jacobian_input
+jacobian_input_unstandardized
+jacobians
+lm_log.txt
+mmultlog.txt
+speedtest.txt
+v
+WJs
+feature_importance_log.txt

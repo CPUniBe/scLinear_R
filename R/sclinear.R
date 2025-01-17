@@ -151,8 +151,6 @@ scLinear <- function(object, remove_doublets = TRUE, low_qc_cell_removal = TRUE,
 
 }
 
-
-
 #' Trains a prediction model to predict (CLR-transformed & Seurat normed) ADT expression levels based on gene expression data
 #'
 #' @param gexp_train Seurat Object containing gene expression data in the layer specified by argument layer_gex
@@ -358,6 +356,37 @@ evaluate_predictor <- function(predictor,gexp_test,adt_test,gexp_layer = 'counts
   return(list(rmse = rmse,pearson = pearson, spearman = spearman, mean_pearson = mean_pearson, mean_spearman = mean_spearman))
 }
 
+# Auxilliary function --> calculate jacobian of one cell so we can then apply this function across all cells
+# Pass N as input so it doesn't have to be calculated on each call and all projections have the same number of components
+# Unclear if better to use N or N-1 for standard deviation --> in that case only the N*sd would change to (N-1) * sd --> the other Ns come from mean not sd
+cellwise_jacobian <- function(cell_projection){
+  N <- length(cell_projection)
+  sd <- sd(cell_projection)
+  m <- mean(cell_projection)
+  non_constant <- Matrix::tcrossprod(cell_projection-m)
+  # Derivative of standard score of input x_i by x_j --> diagonal is correction term for when i = j
+  return((((-sd/N) - (non_constant/(N*sd)))/(sd^2)) + diag(sd, nrow = N))
+}
+
+# defining matrix product as a function instead of operator just because operator %*% can't be passed easily to apply function
+# without slowing down parallelization (no FUN = function()...)
+# Need f(y,x) = x %*% y --> order swapped
+# Function will be called by apply and m2 is the big object to iterate over so it will be the first argument
+matprod_rl <- function(m2,m1){
+  return (m1 %*% m2)
+}
+
+matprod_lr <- function(m1,m2){
+  return (m1 %*% m2)
+}
+
+# Helper function for feature importance
+cross_cell_average_fi_c <- function(WJ_single_model,v){
+  gc()
+  WJV <- matrix_product(t(WJ_single_model),v)
+  return(colMeans(WJV))
+}
+
 #' Feature Importance
 #'
 #' Only implemented for the case where z-score normalization was applied AFTER dimensionality reduction. \cr
@@ -375,7 +404,8 @@ evaluate_predictor <- function(predictor,gexp_test,adt_test,gexp_layer = 'counts
 #'
 #' @return Effect of the expression level of each gene on the prediction of the ADT values (averaged across all cells present in the input).
 #' @export
-feature_importance <- function(predictor,gexp,layer_gexp,normalize_gex = TRUE){
+feature_importance <- function(predictor,gexp,layer_gexp,normalize_gex = TRUE,n_cores = NULL){
+  if(is.null(n_cores)){n_cores <- parallelly::availableCores(omit = 4)}
   if(!(predictor$zscore_relative_to_tsvd == 'after')){
     print('Feature importance calculation not yet implemented for model with z-score normalization BEFORE tSVD')
     return(NULL)
@@ -394,13 +424,15 @@ feature_importance <- function(predictor,gexp,layer_gexp,normalize_gex = TRUE){
 
   gexp <- filter_input_genes(gexp,predictor)
   gexp <- Matrix::t(gexp)
+  gexp_names <- colnames(gexp)
 
   gexp_projected <- gexp %*% predictor$tsvd_v
 
-  gexp_projected <- Matrix::t(apply(gexp_projected, 1, function(x) {
-    (x - mean(x)) / sd(x)
-  }
-  ))
+  # No normalization here --> we want dz/dprojection evaluated AT THE CURRENT PROJECTION
+  # gexp_projected <- Matrix::t(apply(gexp_projected, 1, function(x) {
+  #   (x - mean(x)) / sd(x)
+  # }
+  # ))
 
   # Total gradient = W x J x t(v) where W = LM weights, J = Jacobian of z-score transformation and t(v) = Transpose of 'V' from tSVD
 
@@ -417,20 +449,54 @@ feature_importance <- function(predictor,gexp,layer_gexp,normalize_gex = TRUE){
   # Drop the intercept --> not used for derivative d_prediction/d_gex --> constants drop from derivative
   coeff_matrix <- t(coeff_matrix[2:nrow(coeff_matrix),])
 
-  # Auxilliary function --> calculate jacobian of one cell so we can then apply this function across all cells
-  cellwise_jacobian <- function(cell_projection){
-    jacobian <- numDeriv::jacobian(func = function(x) {(x - mean(x)) / sd(x)}, cell_projection)
-  }
+
+  # environment(cellwise_jacobian) <- environment(feature_importance)
+  on.exit(parallel::stopCluster(cl))
   # Slow but that's a looooot of matrix multiplications to run so probably to be expected
-  Js <- apply(gexp_projected,1,cellwise_jacobian,simplify = FALSE)
 
-  WJ <- lapply(Js,function(J){return(coeff_matrix %*% J)})
-  v_t <- Matrix::t(predictor$tsvd_v)
+  N <- ncol(gexp_projected)
+  cl <- parallel::makeCluster(n_cores,outfile = 'feature_importance_log.txt')
+  parallel::clusterExport(cl,list('cellwise_jacobian'))
+  print('Calculating Jacobian of z-score normalization step')
 
-  WJV <- abind::abind(lapply(WJ,function(WJ){return(WJ %*% v_t)}), along = 3)
+  Js <- pbapply::pbapply(cl=cl,X = gexp_projected, MARGIN = 1,FUN = cellwise_jacobian,simplify = FALSE)
+  parallel::stopCluster(cl)
+
+  #transposing so we can use crossprod for apply function --> circumvents having to do FUN = function(X)
+  # ... which slows down parallelization when called from environment other than global
+  cl <- parallel::makeCluster(n_cores,outfile = 'feature_importance_log.txt')
+  parallel::clusterExport(cl,list('coeff_matrix'),envir = environment())
+  parallel::clusterExport(cl,list('matprod_rl'))
+  print('Calculating Matrix product WJ')
+  WJ <- abind::abind(pbapply::pblapply(cl = cl, X= Js,FUN = matprod_rl,m1 = coeff_matrix ),along = 3)
+  parallel::stopCluster(cl)
+
+  browser()
+  # v_t <- Matrix::t(predictor$tsvd_v)
+  v <- Matrix::t(predictor$tsvd_v)
+  cl <- parallel::makeCluster(n_cores,outfile = 'feature_importance_log.txt')
+  parallel::clusterEvalQ(cl,Rcpp::cppFunction('
+  NumericMatrix matrix_product(NumericMatrix tm, NumericMatrix tm2) {
+    // Convert R matrices to Eigen matrices
+    const Eigen::Map<Eigen::MatrixXd> ttm(as<Eigen::Map<Eigen::MatrixXd>>(tm));
+    const Eigen::Map<Eigen::MatrixXd> ttm2(as<Eigen::Map<Eigen::MatrixXd>>(tm2));
+
+    // Perform matrix multiplication
+    Eigen::MatrixXd prod = ttm * ttm2;
+
+    // Return the result as a NumericMatrix
+    return wrap(prod);
+  }
+',depends="RcppEigen")
+  )
+  parallel::clusterExport(cl,list('v'), envir = environment())
+  parallel::clusterExport(cl,list('cross_cell_average_fi_c'))
+  print('Calculating Matrix product WJV')
+  WJV <- pbapply::pbapply(cl=cl, X= WJ, MARGIN = 1, FUN= cross_cell_average_fi_c,y=v)
+  parallel::stopCluster(cl)
+  file.remove('feature_importance_log.txt')
   # Axis 1 = model, Axis 2 = Gene, Axis 3 = Cell --> taking mean 'across cells' = mean over margin of axis 1&2
-  feature_importance_means <- apply(WJV, c(1, 2), mean)
-  colnames(feature_importance_means) <- colnames(gexp)
+  colnames(feature_importance_means) <- gexp_names
   rownames(feature_importance_means) <- names(predictor$lm_coefficients)
 
   return(feature_importance_means)

@@ -27,7 +27,6 @@ Imports:
 	tidyselect,
 	abind,
 	Matrix,
-	numDeriv,
 	scran,
 	scuttle,
 	SingleCellExperiment,
