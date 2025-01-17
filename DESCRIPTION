@@ -27,12 +27,13 @@ Imports:
 	tidyselect,
 	abind,
 	Matrix,
+	scDblFinder,
 	scran,
 	scuttle,
 	SingleCellExperiment,
 	sparsesvd,
 	parallel,
-	parllelly,
+	parallelly,
 	pbapply,
 	scMRMA
 LinkingTo: Rcpp

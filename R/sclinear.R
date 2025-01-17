@@ -474,6 +474,12 @@ feature_importance <- function(predictor,gexp,layer_gexp,normalize_gex = TRUE,n_
   browser()
   # v_t <- Matrix::t(predictor$tsvd_v)
   v <- Matrix::t(predictor$tsvd_v)
+
+
+  f <- function(WJ_element){cross_cell_average_fi_c(WJ_element,v)}
+  env <- new.env(parent = environment(feature_importance))
+  env$v <- v
+  environment(f) <- env
   cl <- parallel::makeCluster(n_cores,outfile = 'feature_importance_log.txt')
   parallel::clusterEvalQ(cl,Rcpp::cppFunction('
   NumericMatrix matrix_product(NumericMatrix tm, NumericMatrix tm2) {
@@ -489,17 +495,17 @@ feature_importance <- function(predictor,gexp,layer_gexp,normalize_gex = TRUE,n_
   }
 ',depends="RcppEigen")
   )
-  parallel::clusterExport(cl,list('v'), envir = environment())
+  parallel::clusterExport(cl,list('v'),envir = env)
   parallel::clusterExport(cl,list('cross_cell_average_fi_c'))
   print('Calculating Matrix product WJV')
-  WJV <- pbapply::pbapply(cl=cl, X= WJ, MARGIN = 1, FUN= cross_cell_average_fi_c,y=v)
+  WJV <- pbapply::pbapply(cl=cl, X= WJ, MARGIN = 1, FUN= f)
   parallel::stopCluster(cl)
   file.remove('feature_importance_log.txt')
   # Axis 1 = model, Axis 2 = Gene, Axis 3 = Cell --> taking mean 'across cells' = mean over margin of axis 1&2
-  colnames(feature_importance_means) <- gexp_names
-  rownames(feature_importance_means) <- names(predictor$lm_coefficients)
+  rownames(WJV) <- gexp_names
+  colnames(WJV) <- names(predictor$lm_coefficients)
 
-  return(feature_importance_means)
+  return(WJV)
 }
 
 
@@ -530,4 +536,3 @@ gexp_normalize <- function(gexp_matrix, center.size.factors = FALSE, log = FALSE
   gexp_matrix <- base::log1p(gexp_matrix)
   return(gexp_matrix)
 }
-
