@@ -32,10 +32,14 @@ Imports:
 	scuttle,
 	SingleCellExperiment,
 	sparsesvd,
+	Rcpp,
+	RcppEigen,
 	parallel,
 	parallelly,
 	pbapply,
 	scMRMA
-LinkingTo: Rcpp
+LinkingTo: 
+    Rcpp,
+    RcppEigen
 SystemRequirements: C++11
 biocViews:

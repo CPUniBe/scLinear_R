@@ -471,7 +471,6 @@ feature_importance <- function(predictor,gexp,layer_gexp,normalize_gex = TRUE,n_
   WJ <- abind::abind(pbapply::pblapply(cl = cl, X= Js,FUN = matprod_rl,m1 = coeff_matrix ),along = 3)
   parallel::stopCluster(cl)
 
-  browser()
   # v_t <- Matrix::t(predictor$tsvd_v)
   v <- Matrix::t(predictor$tsvd_v)
 
