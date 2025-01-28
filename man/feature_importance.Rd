@@ -4,7 +4,13 @@
 \alias{feature_importance}
 \title{Feature Importance}
 \usage{
-feature_importance(predictor, gexp, layer_gexp, normalize_gex = TRUE)
+feature_importance(
+  predictor,
+  gexp,
+  layer_gexp,
+  normalize_gex = TRUE,
+  n_cores = NULL
+)
 }
 \arguments{
 \item{predictor}{Predictor created by fit_predictor function}

@@ -483,20 +483,8 @@ feature_importance <- function(predictor,gexp,layer_gexp,normalize_gex = TRUE,n_
   env$v <- v
   environment(f) <- env
   cl <- parallel::makeCluster(n_cores,outfile = 'feature_importance_log.txt')
-  parallel::clusterEvalQ(cl,Rcpp::cppFunction('
-  NumericMatrix matrix_product(NumericMatrix tm, NumericMatrix tm2) {
-    // Convert R matrices to Eigen matrices
-    const Eigen::Map<Eigen::MatrixXd> ttm(as<Eigen::Map<Eigen::MatrixXd>>(tm));
-    const Eigen::Map<Eigen::MatrixXd> ttm2(as<Eigen::Map<Eigen::MatrixXd>>(tm2));
-
-    // Perform matrix multiplication
-    Eigen::MatrixXd prod = ttm * ttm2;
-
-    // Return the result as a NumericMatrix
-    return wrap(prod);
-  }
-',depends="RcppEigen")
-  )
+  # Likely change to 'library(scLineaR)' when deploying as a package if path is not relative to package directory
+  parallel::clusterEvalQ('src/matrix_product.cpp')
   parallel::clusterExport(cl,list('v'),envir = env)
   parallel::clusterExport(cl,list('cross_cell_average_fi_c'))
   WJV <- pbapply::pbapply(cl=cl, X= WJ, MARGIN = 1, FUN= f)
