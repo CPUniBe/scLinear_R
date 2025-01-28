@@ -1,2 +1,7 @@
 ^scLineaR\.Rproj$
 ^\.Rproj\.user$
+^Compare_tissue_models\.R$
+^deriv_check\.R$
+^check_model_performance\.R$
+^Reproduce_training\.R$
+^Pretrain\.R$

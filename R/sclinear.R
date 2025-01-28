@@ -201,7 +201,7 @@ fit_predictor <- function(gexp_train,adt_train, gexp_test = NULL,
     training_set <- Matrix::t(cbind(gexp_train,gexp_test))
   }else{training_set <- Matrix::t(gexp_train)}
 
-  # Keep all genes expressed in at least one cell
+  # Keep all genes expressed in at least one cell --> might work poorly if it needs to filter out columns (filter out cells instead of genes)
   training_set <- training_set[unique(Matrix::summary(training_set)$i),unique(Matrix::summary(training_set)$j)]
   keep_genes <- colnames(training_set)
   # z-score normalization --> transpose after applying z-score is necessary to get THE SAME dimension as the input
@@ -214,6 +214,7 @@ fit_predictor <- function(gexp_train,adt_train, gexp_test = NULL,
   # Create tSVD decomposition
   print('Calculating truncated singular value decomposition - for large input matrices this may take several minutes')
   trained_tsvd <- sparsesvd::sparsesvd(training_set,rank = n_components)
+  print('tSVD done')
   # apply tSVD projection on input data
   training_set <- training_set %*% trained_tsvd$v
   # z-score normalizaton
@@ -330,6 +331,7 @@ predict <- function(predictor,gexp,layer="counts",normalize_gex=TRUE){
 #' @export
 evaluate_predictor <- function(predictor,gexp_test,adt_test,gexp_layer = 'counts', adt_layer = 'counts', normalize_gex = TRUE, normalize_adt = TRUE, margin = 2){
 
+  # ToFix --> can't compare CLR if different subsets were considered since it's compositional data
   predicted_adt <- predict(predictor,gexp_test,layer = gexp_layer, normalize_gex = normalize_gex)
   if(class(adt_test)[1] == "Assay" |class(adt_test)[1] == "Assay5"){ adt_test <- Seurat::GetAssayData(adt_test, layer = adt_layer) }
   if(normalize_adt){
@@ -474,7 +476,8 @@ feature_importance <- function(predictor,gexp,layer_gexp,normalize_gex = TRUE,n_
   # v_t <- Matrix::t(predictor$tsvd_v)
   v <- Matrix::t(predictor$tsvd_v)
 
-
+  browser()
+  print('Calculating Matrix product WJV')
   f <- function(WJ_element){cross_cell_average_fi_c(WJ_element,v)}
   env <- new.env(parent = environment(feature_importance))
   env$v <- v
@@ -496,7 +499,6 @@ feature_importance <- function(predictor,gexp,layer_gexp,normalize_gex = TRUE,n_
   )
   parallel::clusterExport(cl,list('v'),envir = env)
   parallel::clusterExport(cl,list('cross_cell_average_fi_c'))
-  print('Calculating Matrix product WJV')
   WJV <- pbapply::pbapply(cl=cl, X= WJ, MARGIN = 1, FUN= f)
   parallel::stopCluster(cl)
   file.remove('feature_importance_log.txt')

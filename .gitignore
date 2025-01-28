@@ -20,3 +20,5 @@ model_full_neurips
 training_set
 Reproduce_training.R
 check_model_performance.R
+Compare_tissue_models.R
+Check.R
