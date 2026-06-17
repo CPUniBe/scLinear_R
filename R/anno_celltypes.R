@@ -9,6 +9,25 @@
 #' \dontrun{
 #' sobj <- anno_celltypes(object = sobj, anno_level = 2, species = "Hs")
 #' }
+
+# Package seems unmaintained (last update 5 years ago) -> it uses Seurat slot argument which has been replaced by 'layer' but is otherwise still functional
+scMRMA_patched_anno <- local({
+  f <- scMRMA::scMRMA
+
+  txt <- deparse(body(f))
+  txt <- gsub(
+    'slot = "counts"',
+    'layer = "counts"',
+    txt,
+    fixed = TRUE
+  )
+
+  body(f) <- parse(text = paste(txt, collapse = "\n"))[[1]]
+
+  f
+})
+
+
 anno_celltypes <- function(object, anno_level = 2, selfClusters = NULL, species = "Hs", seed = 42, ...) {
   default_assay <- Seurat::DefaultAssay(object)
   Seurat::DefaultAssay(object) <- "RNA"
@@ -17,7 +36,7 @@ anno_celltypes <- function(object, anno_level = 2, selfClusters = NULL, species 
   base::load(system.file("data", "Human_PanglaoDB.Rdata", package = "scMRMA"))
 
 
-  anno_res <- scMRMA::scMRMA(
+  anno_res <- scMRMA_patched_anno(
     input = object,
     species = species,
     db = "panglaodb",
