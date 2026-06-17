@@ -637,19 +637,26 @@ feature_importance <- function(predictor,gexp,layer_gexp,normalize_gex = TRUE,n_
 
   print('Calculating Matrix product WJV')
   v <- Matrix::t(predictor$tsvd_v)
-  f <- function(WJ_element){cross_cell_average_fi_c(WJ_element,v)}
-  env <- new.env(parent = environment(feature_importance))
-  env$v <- v
-  environment(f) <- env
-  cl <- parallel::makeCluster(n_cores)
-  # Likely change to 'library(scLineaR)' when deploying as a package if path is not relative to package directory
-  parallel::clusterEvalQ(cl,library(scLineaR))
-  # parallel::clusterEvalQ(cl,Rcpp::sourceCpp('C:/Users/mz24b548/Documents/GitRepos_local/scLinear_R/src/matrix_product.cpp'))
-  parallel::clusterExport(cl,list('v'),envir = env)
-  parallel::clusterExport(cl,list('cross_cell_average_fi_c'))
-  WJV <- pbapply::pbapply(cl=cl, X= WJ, MARGIN = 1, FUN= f)
-  parallel::stopCluster(cl)
-  # WJV <- cluster_call_WJV(WJ,v,n_cores)
+  # f <- function(WJ_element){cross_cell_average_fi_c(WJ_element,v)}
+  # env <- new.env(parent = environment(feature_importance))
+  # env$v <- v
+  # environment(f) <- env
+  # cl <- parallel::makeCluster(n_cores)
+  # # The parallel workers need to know where to look for the package as they don't automatically inherit the
+  # # library of the calling environment
+  # libpaths <- .libPaths()
+  # parallel::clusterExport(cl, "libpaths")
+  # parallel::clusterEvalQ(cl,{
+  #   .libPaths(libpaths)
+  #   library(scLineaR)
+  # }
+  #   )
+  # # parallel::clusterEvalQ(cl,Rcpp::sourceCpp('C:/Users/mz24b548/Documents/GitRepos_local/scLinear_R/src/matrix_product.cpp'))
+  # parallel::clusterExport(cl,list('v'),envir = env)
+  # parallel::clusterExport(cl,list('cross_cell_average_fi_c'))
+  # WJV <- pbapply::pbapply(cl=cl, X= WJ, MARGIN = 1, FUN= f)
+  # parallel::stopCluster(cl)
+  WJV <- cluster_call_WJV(WJ,v,n_cores)
   # Axis 1 = model, Axis 2 = Gene, Axis 3 = Cell --> taking mean 'across cells' = mean over margin of axis 1&2
   rownames(WJV) <- gexp_names
   colnames(WJV) <- names(predictor$lm_coefficients)
@@ -859,7 +866,6 @@ cluster_call_cellwise_jacobian <- function(gexp_projected,n_cores){
   cl <- parallel::makeCluster(n_cores,outfile = 'feature_importance_log.txt')
   parallel::clusterExport(cl,list('cellwise_jacobian'))
   print('Calculating Jacobian of z-score normalization step')
-
   Js <- pbapply::pbapply(cl=cl,X = gexp_projected, MARGIN = 1,FUN = cellwise_jacobian,simplify = FALSE)
   parallel::stopCluster(cl)
   return(Js)
@@ -875,18 +881,24 @@ parallel::stopCluster(cl)
 return(WJ)
 }
 
-# cluster_call_WJV <- function(WJ,v,n_cores){
-#   f <- function(WJ_element){cross_cell_average_fi_c(WJ_element,v)}
-#   env <- new.env(parent = environment(cluster_call_WJV))
-#   env$v <- v
-#   environment(f) <- env
-#   cl <- parallel::makeCluster(n_cores,outfile = 'feature_importance_log.txt')
-#   # Likely change to 'library(scLineaR)' when deploying as a package if path is not relative to package directory
-#   # parallel::clusterEvalQ(cl,library(scLineaR))
-#   parallel::clusterEvalQ(cl,Rcpp::sourceCpp('C:/Users/mz24b548/Documents/GitRepos_local/scLinear_R/src/matrix_product.cpp'))
-#   # parallel::clusterExport(cl,list('v'))
-#   parallel::clusterExport(cl,list('cross_cell_average_fi_c'))
-#   WJV <- pbapply::pbapply(cl=cl, X= WJ, MARGIN = 1, FUN= f)
-#   parallel::stopCluster(cl)
-#   return(WJV)
-# }
+cluster_call_WJV <- function(WJ,v,n_cores){
+  f <- function(WJ_element){cross_cell_average_fi_c(WJ_element,v)}
+  # env <- new.env(parent = environment(cluster_call_WJV))
+  # env$v <- v
+  # environment(f) <- env
+  cl <- parallel::makeCluster(n_cores,outfile = 'feature_importance_log.txt')
+
+  # parallel::clusterEvalQ(cl,library(scLineaR))
+  libpaths <- .libPaths()
+  parallel::clusterExport(cl,list('v','cross_cell_average_fi_c','libpaths'))
+  # parallel::clusterExport(cl,list('cross_cell_average_fi_c'))
+  # parallel::clusterExport(cl, "libpaths")
+  parallel::clusterEvalQ(cl,{
+    .libPaths(libpaths)
+    library(scLineaR)
+  }
+    )
+  WJV <- pbapply::pbapply(cl=cl, X= WJ, MARGIN = 1, FUN= f)
+  parallel::stopCluster(cl)
+  return(WJV)
+}
